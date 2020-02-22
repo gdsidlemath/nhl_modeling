@@ -25,7 +25,7 @@ class MlbApiScraper:
         else:
             seasons = list(range(seasons[0], seasons[1] + 1))
         if months is None:
-            months = [3, 11]
+            months = [9, 6]
         elif not isinstance(months, (tuple, list)):
             months = [months]
         if days is None:
@@ -41,11 +41,24 @@ class MlbApiScraper:
                 if any(t == "flo" for t in teams) and not any(t == "mia" for t in teams):
                     teams.append("mia")
 
+        self.team_dict = {"njd": 1, "nyi": 2, "nyr": 3, "phi": 4, "pit": 5, "bos": 6,
+                          "buf": 7, "mtl": 8, "ott": 9, "tor": 10, "car": 12, "fla": 13,
+                          "tbl": 14, "wsh": 15, "chi": 16, "det": 17, "nsh": 18, "stl": 19,
+                          "cgy": 20, "col": 21, "edm": 22, "van": 23, "ana": 24, "dal": 25,
+                          "lak": 26, "sjs": 28, "cbj": 29, "min": 30, "wpg": 52, "ari": 53, "vgk": 54}
+
+
         if teams is None:
-            teams = ["ana", "nya", "bal", "cle", "chn", "was", "det", "cha", "hou",
-                     "tor", "mia", "col", "mil", "min", "nyn", "ari", "oak", "bos",
-                     "pit", "atl", "sdn", "cin", "sfn", "phi", "sln", "lan",
-                     "tba", "sea", "tex", "kca"]
+            teams_list = ["njd", "nyi", "nyr", "phi", "bos", "pit", "buf", "mtl", "ott",
+                          "tor", "car", "fla", "tbl", "wsh", "chi", "det", "nsh", "stl",
+                          "cgy", "col", "edm", "van", "ana", "dal", "lak", "sjs", "cbj",
+                          "min", "ari", "wpg", "vgk"]
+        else:
+            teams_list = teams
+
+        team_id_list = []
+        for tm in teams_list:
+            team_id_list.append(self.team_dict[tm.lower()])
 
         self.opening_day_dict = {2009: (4, 5),
                                  2010: (4, 4),
@@ -63,7 +76,7 @@ class MlbApiScraper:
         self.seasons = seasons
         self.months = months
         self.days = days
-        self.teams = teams
+        self.teams = teams_id_list
 
         self.as_db = as_db
         self.as_csv = as_csv
@@ -291,24 +304,7 @@ class MlbApiScraper:
 
 def main():
 
-    g_list, a_list, p_list = [], [], []
-    for season in range(2010, 2020):
-        cnx = lite.connect(str(season) + "_season.db")
-        g_list.append(pd.read_sql("select * from games", cnx).reset_index(drop=True))
-        a_list.append(pd.read_sql("select * from abs", cnx).reset_index(drop=True))
-        p_list.append(pd.read_sql("select * from pitches", cnx).reset_index(drop=True))
-
-    all_ps = pd.concat(p_list)
-    all_gs = pd.concat(g_list)
-    all_as = pd.concat(a_list)
-
-    connect = lite.connect("2010_2019_seasons.db")
-    all_gs.to_sql(name="games", con=connect)
-    all_as.to_sql(name="abs", con=connect)
-    all_ps.to_sql(name="pitches", con=connect)
-
-    exit()
-    pfxs = MlbApiScraper(days=[1, 30], months=[2, 11], seasons=[2010, 2019], as_db=True, db_name="10_19_seasons")  # days=[10, 13], months=[8, 9], seasons=2019)
+    pfxs = MhlApiScraper(days=[1, 30], months=[10, 6], seasons=[2010, 2019], as_db=True, db_name="10_19_seasons")  # days=[10, 13], months=[8, 9], seasons=2019)
 
     pfxs.get_all_api_game_dfs()
 
