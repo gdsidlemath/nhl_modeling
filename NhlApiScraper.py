@@ -6,7 +6,7 @@ import json
 import sqlite3 as lite
 import sys
 
-class MlbApiScraper:
+class NhlApiScraper:
 
     def __init__(self,
                  seasons=None,
@@ -33,14 +33,6 @@ class MlbApiScraper:
         elif not isinstance(days, (tuple, list)):
             days = [days]
 
-        # *** only add "flo" distinction if interest is in specific teams ***
-        if teams is not None:
-            if min(seasons) < 2012:
-                if any(t == "mia" for t in teams) and not any(t == "flo" for t in teams):
-                    teams.append("flo")
-                if any(t == "flo" for t in teams) and not any(t == "mia" for t in teams):
-                    teams.append("mia")
-
         self.team_dict = {"njd": 1, "nyi": 2, "nyr": 3, "phi": 4, "pit": 5, "bos": 6,
                           "buf": 7, "mtl": 8, "ott": 9, "tor": 10, "car": 12, "fla": 13,
                           "tbl": 14, "wsh": 15, "chi": 16, "det": 17, "nsh": 18, "stl": 19,
@@ -59,19 +51,6 @@ class MlbApiScraper:
         team_id_list = []
         for tm in teams_list:
             team_id_list.append(self.team_dict[tm.lower()])
-
-        self.opening_day_dict = {2009: (4, 5),
-                                 2010: (4, 4),
-                                 2011: (3, 31),
-                                 2012: (3, 28),
-                                 2013: (3, 31),
-                                 2014: (3, 30),
-                                 2015: (4, 5),
-                                 2016: (4, 3),
-                                 2017: (4, 2),
-                                 2018: (3, 29),
-                                 2019: (3, 28),
-                                 2020: (3, 26)}
 
         self.seasons = seasons
         self.months = months
@@ -117,7 +96,7 @@ class MlbApiScraper:
 
                 json_list.append(raw_json)
         else:
-            url = "https://statsapi.mlb.com/api/v1/schedule/?startDate=" + start_date + "&endDate=" + end_date
+            url = "https://statsapi.nhl.com/api/v1/schedule/?startDate=" + start_date + "&endDate=" + end_date
 
             raw = self.get_raw_url_data(url)
 
@@ -153,31 +132,27 @@ class MlbApiScraper:
 
         all_id_list = [gid for gid_list in temp_id_list for gid in gid_list]
 
-        all_game_list, all_ab_list, all_pitch_list = [], [], []
+        all_game_list, all_play_list = [], []
         for gid in all_id_list:
             raw_data = self.get_api_game_data(gid=gid)
             df_list = self.build_game_dataframes(raw_data)
             if not any([df is None for df in df_list]):
-                game_df, ab_df, pitch_df = df_list
+                game_df, play_df  = df_list
                 all_game_list.append(game_df.reset_index(drop=True))
-                all_ab_list.append(ab_df.reset_index(drop=True))
-                all_pitch_list.append(pitch_df.reset_index(drop=True))
+                all_play_list.append(play_df.reset_index(drop=True))
 
         all_game_df = pd.concat(all_game_list, sort=False)
-        all_ab_df = pd.concat(all_ab_list, sort=False)
-        all_pitch_df = pd.concat(all_pitch_list, sort=False)
+        all_play_df = pd.concat(all_play_list, sort=False)
 
         if self.as_db:
             connect = lite.connect(self.db_name + ".db")
             all_game_df.to_sql(name="games", con=connect)
-            all_ab_df.to_sql(name="abs", con=connect)
-            all_pitch_df.to_sql(name="pitches", con=connect)
+            all_play_df.to_sql(name="plays", con=connect)
         elif self.as_csv:
             all_game_df.to_csv(self.ds_name + "_games.csv")
-            all_ab_df.to_csv(self.ds_name + "_abs.csv")
-            all_pitch_df.to_csv(self.ds_name + "_pitches.csv")
+            all_play_df.to_csv(self.ds_name + "_plays.csv")
         else:
-            return all_game_df, all_ab_df, all_pitch_df
+            return all_game_df, all_play_df
 
     def build_game_dictionary(self, game_json):
 
@@ -189,7 +164,7 @@ class MlbApiScraper:
             for val in ["winner", "loser", "firstStar", "secondStar", "thirdStar"]:
                 try:
                     game_dict[val] = game_json["liveData"]["decisions"][val]["id"]
-                exception Exception as e:
+                except Exception as e:
                     game_dict[val] = None
 
             game_dict = {
@@ -197,63 +172,41 @@ class MlbApiScraper:
                 "home_team": game_data["teams"]["home"]["id"],
                 "away_team": game_data["teams"]["away"]["id"],
                 "stadium": game_data["venue"]["id"],
-                "weather_condition": game_data["weather"].pop("condition", None),
-                "temperature": game_data["weather"].pop("temp", None),
             }
             plays_by_period = [pbp_dict["plays"] for pbp_dict in game_json["liveData"]["plays"]["playsByPeriod"]]
             all_play_list = []
             for period_inds in plays_by_period:
                 for temp_ind, play_ind in enumerate(period_inds):
                     play = plays[play_ind]
-                    if play["result"]["eventTypeId"] not in ("PERIOD_READY", "PERIOD_START", "GAME_SCHEDULED"):
-                        ab_info_dict = {}
-                        ab_info_dict["g_id_int"] = game_dict["g_id_int"]
-                        ab_info_dict["ab_ind"] = play["atBatIndex"]
+                    if play["result"]["eventTypeId"] not in ("PERIOD_READY", "PERIOD_START", "GAME_SCHEDULED", "PERIOD_OFFICIAL"):
+                        play_info_dict = {}
+                        play_info_dict["g_id_int"] = game_dict["g_id_int"]
+                        play_info_dict["play_ind"] = play_ind
 
-                        for res_val in ["eventType", "description"]:
-                            ab_info_dict[res_val] = play["result"].pop(res_val, None)
+                        for res_val in ["event", "description"]:
+                            play_info_dict[res_val] = play["result"].pop(res_val, None)
 
                         if temp_ind > 0:
                             for res_val in ["awayScore", "homeScore"]:
-                                ab_info_dict[res_val] = previous_play_res[res_val]
-                            ab_info_dict["outs"] = prev_outs
+                                play_info_dict[res_val] = previous_play_res[res_val]
+                            play_info_dict["outs"] = prev_outs
                         else:
-                            ab_info_dict["awayScore"] = 0
-                            ab_info_dict["homeScore"] = 0
-                            ab_info_dict["outs"] = 0
+                            play_info_dict["awayScore"] = 0
+                            play_info_dict["homeScore"] = 0
+                            play_info_dict["outs"] = 0
 
-                        if temp_ind > 0:
-                            if temp_ind == 1:
-                                twice_previous_runners = {"on1b": None, "on2b": None, "on3b": None}
-                            else:
-                                twice_previous_runners = prev_play_runners_on
-                            runners_on = get_runners(previous_play_runners, twice_previous_runners)
-                        else:
-                            runners_on = {"on1b": None, "on2b": None, "on3b": None}
-                        for key_val in list(runners_on.keys()):
-                            ab_info_dict[key_val] = runners_on[key_val]
 
-                        for abt_val in ["inning", "halfInning", "startTime", "endTime"]:
-                            if "Time" in abt_val:
-                                tv = play["about"].pop(abt_val, None)
-                                if tv is not None:
-                                    ab_info_dict[abt_val] = datetime.strptime(tv[:-5], "%Y-%m-%dT%H:%M:%S")
-                                else:
-                                    ab_info_dict[abt_val] = tv
-                            else:
-                                ab_info_dict[abt_val] = play["about"].pop(abt_val, None)
-
-                        ab_info_dict["batter_id"] = play["matchup"]["batter"].pop("id", None)
-                        ab_info_dict["batter_stance"] = play["matchup"]["batSide"].pop("code", None)
-                        ab_info_dict["pitcher_id"] = play["matchup"]["pitcher"].pop("id", None)
-                        ab_info_dict["pitcher_hand"] = play["matchup"]["pitchHand"].pop("code", None)
+                        play_info_dict["batter_id"] = play["matchup"]["batter"].pop("id", None)
+                        play_info_dict["batter_stance"] = play["matchup"]["batSide"].pop("code", None)
+                        play_info_dict["pitcher_id"] = play["matchup"]["pitcher"].pop("id", None)
+                        play_info_dict["pitcher_hand"] = play["matchup"]["pitchHand"].pop("code", None)
 
                         pitches = [ev for ev in play["playEvents"] if "call" in list(ev["details"].keys())]
 
-                        ab_ind_tuple = (ab_info_dict["g_id_int"], ab_info_dict["ab_ind"])
-                        ab_info_dict["pitches"] = get_pitch_dict(pitches, ab_ind_tuple)
+                        ab_ind_tuple = (play_info_dict["g_id_int"], play_info_dict["ab_ind"])
+                        play_info_dict["pitches"] = get_pitch_dict(pitches, ab_ind_tuple)
 
-                        all_ab_list.append(ab_info_dict)
+                        all_ab_list.append(play_info_dict)
 
                         previous_play_res = play["result"]
                         previous_play_runners = play["runners"]
@@ -270,33 +223,27 @@ class MlbApiScraper:
         game_dict = self.build_game_dictionary(game_json)
 
         if game_dict is not None:
-            ab_list = game_dict.pop("at_bats")
-
-            pl_temp = [ab.pop("pitches") for ab in ab_list]
-            pitch_list = [p for pl in pl_temp for p in pl]
+            play_list = game_dict.pop("plays")
 
             game_ind = game_dict["g_id_int"]
             game_df = pd.DataFrame(game_dict, index=[game_ind])
 
-            ab_ind = [ab["ab_ind"] for ab in ab_list]
-            ab_df = pd.DataFrame(ab_list, index=ab_ind)
+            play_ind = [play["play_ind"] for play in play_list]
+            play_df = pd.DataFrame(play_list, index=play_ind)
 
-            p_ind = [p["p_ind"] for p in pitch_list]
-            pitch_df = pd.DataFrame(pitch_list, index=p_ind)
-
-            return game_df, ab_df, pitch_df
+            return game_df, play_df
         else:
-            return None, None, None
+            return None, None
 
     def get_player_data(self):
 
-        batter_dict = {}
+        player_dict = {}
         if self.as_db:
             cnx = lite.connect(self.db_name + ".db")
-            unique_batter_query = "select distinct batter_id from abs"
-            batter_df = pd.read_sql(unique_batter_query, cnx)
-            for bt_id in batter_df.tolist():
-                url = "https://statsapi.mlb.com/api/v1/people/" + bt_id
+            unique_player_query = "select distinct player_id from plays"
+            player_df = pd.read_sql(unique_player_query, cnx)
+            for plyr_id in player_df.tolist():
+                url = "https://statsapi.nhl.com/api/v1/people/" + plyr_id
                 id_dict = self.get_raw_url_data(url)
             pass
 
@@ -304,27 +251,9 @@ class MlbApiScraper:
 
 def main():
 
-    pfxs = MhlApiScraper(days=[1, 30], months=[10, 6], seasons=[2010, 2019], as_db=True, db_name="10_19_seasons")  # days=[10, 13], months=[8, 9], seasons=2019)
+    nhls = NhlApiScraper(days=[1, 30], months=[10, 6], seasons=[2010, 2019], as_db=True, db_name="10_19_seasons")  # days=[10, 13], months=[8, 9], seasons=2019)
 
-    pfxs.get_all_api_game_dfs()
-
-    exit()
-
-    #temp0.to_csv("temp.csv")
-
-    temp = pfxs.get_api_game_data(565932)
-
-    temp2 = pfxs.build_game_dataframes(temp)
-
-    #pfxs.get_game_list_by_day(3, 1, 2019)
-
-    #pitch_df = pfxs.get_all_game_dfs()
-
-    '''ab_dict, use_gid = pfxs.get_game_atbat_data("gid_2017_04_14_pitmlb_chnmlb_1")
-
-    pitch_df = pfxs.build_game_dataframe(ab_dict, use_gid)'''
-
-    #pitch_df.to_csv("all_pitch_data.csv")
+    nhls.get_all_api_game_dfs()
 
 if __name__ == "__main__":
 
