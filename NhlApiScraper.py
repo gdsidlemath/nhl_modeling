@@ -136,6 +136,9 @@ class NhlApiScraper:
         for gid in all_id_list:
             raw_data = self.get_api_game_data(gid=gid)
             df_list = self.build_game_dataframes(raw_data)
+
+            raw_shift = self.get_shift_data(gid=gid)
+            shift_list = self.build_shift_df(raw_shift)
             if not any([df is None for df in df_list]):
                 game_df, play_df  = df_list
                 all_game_list.append(game_df.reset_index(drop=True))
@@ -234,6 +237,20 @@ class NhlApiScraper:
             return game_df, play_df
         else:
             return None, None
+
+    def get_shift_data(self, gid):
+
+        url = "https://api.nhle.com/stats/rest/en/shiftcharts?cayenneExp=gameId=" + str(gid)
+
+        raw = self.get_raw_url_data(url)
+
+        raw_json = json.loads(raw)
+
+        return raw_json
+
+    def build_shift_df(self, shift_json)
+
+        return shift_df
 
     def get_player_data(self):
 
