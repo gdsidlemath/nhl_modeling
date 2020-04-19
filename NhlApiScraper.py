@@ -135,10 +135,11 @@ class NhlApiScraper:
         all_game_list, all_play_list = [], []
         for gid in all_id_list:
             raw_data = self.get_api_game_data(gid=gid)
-            df_list = self.build_game_dataframes(raw_data)
-
             raw_shift = self.get_shift_data(gid=gid)
-            shift_list = self.build_shift_df(raw_shift)
+            shift_df = self.build_shift_df(raw_shift)
+
+            df_list = self.build_game_dataframes(raw_data, shift_df)
+
             if not any([df is None for df in df_list]):
                 game_df, play_df  = df_list
                 all_game_list.append(game_df.reset_index(drop=True))
@@ -157,7 +158,7 @@ class NhlApiScraper:
         else:
             return all_game_df, all_play_df
 
-    def build_game_dictionary(self, game_json):
+    def build_game_dictionary(self, game_json, shift_list):
 
         game_data = game_json["gameData"]
 
@@ -176,54 +177,50 @@ class NhlApiScraper:
                 "away_team": game_data["teams"]["away"]["id"],
                 "stadium": game_data["venue"]["id"],
             }
-            plays_by_period = [pbp_dict["plays"] for pbp_dict in game_json["liveData"]["plays"]["playsByPeriod"]]
             all_play_list = []
-            for period_inds in plays_by_period:
-                for temp_ind, play_ind in enumerate(period_inds):
-                    play = plays[play_ind]
-                    if play["result"]["eventTypeId"] not in ("PERIOD_READY", "PERIOD_START", "GAME_SCHEDULED", "PERIOD_OFFICIAL"):
-                        play_info_dict = {}
-                        play_info_dict["g_id_int"] = game_dict["g_id_int"]
-                        play_info_dict["play_ind"] = play_ind
+            for play_ind, play in enumerate(plays):
+                if play["result"]["eventTypeId"] not in ("PERIOD_READY", "PERIOD_START", "GAME_SCHEDULED", "PERIOD_OFFICIAL", "GAME_END", "GAME_OFFICIAL"):
+                    play_info_dict = {}
+                    play_info_dict["g_id_int"] = game_dict["g_id_int"]
+                    play_info_dict["play_ind"] = play_ind
 
-                        for res_val in ["event", "description"]:
-                            play_info_dict[res_val] = play["result"].pop(res_val, None)
+                    for res_val in ["eventTypeId", "secondaryType", "description"]:
+                        play_info_dict[res_val] = play["result"].pop(res_val, None)
 
-                        if temp_ind > 0:
-                            for res_val in ["awayScore", "homeScore"]:
-                                play_info_dict[res_val] = previous_play_res[res_val]
-                            play_info_dict["outs"] = prev_outs
-                        else:
-                            play_info_dict["awayScore"] = 0
-                            play_info_dict["homeScore"] = 0
-                            play_info_dict["outs"] = 0
+                    for coor_val in ["x", "y"]:
+                        play_info_dict[coor_val] = play["coordinates"].pop(coor_val, None)
 
+                    for p_val in range(4):
+                        play_info_dict["player" + str(p_val)] = play["players"][p_val]["player"]["id"]
+                        play_info_dict["player" + str(p_val) + "Type"] = play["players"][p_val]["playerType"]
 
-                        play_info_dict["batter_id"] = play["matchup"]["batter"].pop("id", None)
-                        play_info_dict["batter_stance"] = play["matchup"]["batSide"].pop("code", None)
-                        play_info_dict["pitcher_id"] = play["matchup"]["pitcher"].pop("id", None)
-                        play_info_dict["pitcher_hand"] = play["matchup"]["pitchHand"].pop("code", None)
+                    if play_ind > 0:
+                        for res_val in ["away", "home"]:
+                            play_info_dict[res_val + "Goals"] = previous_play_goals[res_val]
+                    else:
+                        play_info_dict["awayGoals"] = 0
+                        play_info_dict["homeGoals"] = 0
 
-                        pitches = [ev for ev in play["playEvents"] if "call" in list(ev["details"].keys())]
+                    period = play["about"]["period"]
+                    time = play["about"]["periodTime"]
 
-                        ab_ind_tuple = (play_info_dict["g_id_int"], play_info_dict["ab_ind"])
-                        play_info_dict["pitches"] = get_pitch_dict(pitches, ab_ind_tuple)
+                    play_info_dict["period"] = period
+                    play_info_dict["periodTime"] = time
 
-                        all_ab_list.append(play_info_dict)
+                    play_info_dict["onIce"] = get_shift_dict(shift_list, period, time)
 
-                        previous_play_res = play["result"]
-                        previous_play_runners = play["runners"]
-                        prev_play_runners_on = runners_on
-                        prev_outs = play["count"]["outs"]
+                    all_play_list.append(play_info_dict)
 
-            game_dict.update({"at_bats": all_ab_list})
+                    previous_play_goals = play["goals"]
+
+            game_dict.update({"plays": all_play_list})
         else:
             game_dict = None
 
         return game_dict
 
-    def build_game_dataframes(self, game_json):
-        game_dict = self.build_game_dictionary(game_json)
+    def build_game_dataframes(self, game_json, shift_df):
+        game_dict = self.build_game_dictionary(game_json, shift_df)
 
         if game_dict is not None:
             play_list = game_dict.pop("plays")
@@ -248,7 +245,17 @@ class NhlApiScraper:
 
         return raw_json
 
-    def build_shift_df(self, shift_json)
+    def build_shift_df(self, shift_json):
+
+        shift_dict = {}
+        for shift in shift_json:
+            for value in ["startTime", "endTime", "teamId", "playerId", "period"]:
+                temp_dict[value] = shift.pop(value, None)
+            temp_dict["intStartTime"] = (20*60)*(temp_dict["period"] - 1) + 60*int(temp_dict["startTime"].split(":")[0] + int(temp_dict["startTime"].split(":")[-1])
+            temp_dict["intEndTime"] = (20*60)*(temp_dict["period"] - 1) + 60*int(temp_dict["endTime"].split(":")[0] + int(temp_dict["endTime"].split(":")[-1])
+            shift_dict[shift["shiftNumber"]] = temp_dict
+
+        shift_df = pd.DataFrame(shift_dict)
 
         return shift_df
 
