@@ -55,7 +55,7 @@ class NhlApiScraper:
         self.seasons = seasons
         self.months = months
         self.days = days
-        self.teams = teams_id_list
+        self.teams = team_id_list
 
         self.as_db = as_db
         self.as_csv = as_csv
@@ -88,7 +88,7 @@ class NhlApiScraper:
         if len(self.seasons) > 1:
             json_list = []
             for sd, ed in date_list:
-                url = "https://statsapi.nhl.com/api/v1/schedule/?startDate=" + sd + "&endDate=" + ed
+                url = "https://statsapi.web.nhl.com/api/v1/schedule/?startDate=" + sd + "&endDate=" + ed
 
                 raw = self.get_raw_url_data(url)
 
@@ -96,7 +96,7 @@ class NhlApiScraper:
 
                 json_list.append(raw_json)
         else:
-            url = "https://statsapi.nhl.com/api/v1/schedule/?startDate=" + start_date + "&endDate=" + end_date
+            url = "https://statsapi.web.nhl.com/api/v1/schedule/?startDate=" + start_date + "&endDate=" + end_date
 
             raw = self.get_raw_url_data(url)
 
@@ -108,7 +108,7 @@ class NhlApiScraper:
 
     def get_api_game_data(self, gid):
 
-        url = "https://statsapi.nhl.com/api/v1/game/" + str(gid) + "/feed/live"
+        url = "https://statsapi.web.nhl.com/api/v1/game/" + str(gid) + "/feed/live"
 
         raw = self.get_raw_url_data(url)
 
@@ -136,9 +136,9 @@ class NhlApiScraper:
         for gid in all_id_list:
             raw_data = self.get_api_game_data(gid=gid)
             raw_shift = self.get_shift_data(gid=gid)
-            shift_df = self.build_shift_df(raw_shift)
+            shift_dict = self.build_shift_dict(raw_shift)
 
-            df_list = self.build_game_dataframes(raw_data, shift_df)
+            df_list = self.build_game_dataframes(raw_data, shift_dict)
 
             if not any([df is None for df in df_list]):
                 game_df, play_df  = df_list
@@ -158,26 +158,32 @@ class NhlApiScraper:
         else:
             return all_game_df, all_play_df
 
-    def build_game_dictionary(self, game_json, shift_list):
+    def build_game_dictionary(self, game_json, shift_dict):
 
         game_data = game_json["gameData"]
 
         plays = game_json["liveData"]["plays"]["allPlays"]
 
         if len(plays) > 0 and game_data["status"]["detailedState"] == "Final":
+
+            homeId = game_data["teams"]["home"]["id"]
+            awayId = game_data["teams"]["away"]["id"]
+
+            game_dict = {
+                "g_id_int": game_data["game"]["pk"],
+                "home_team": homeId,
+                "away_team": awayId,
+                "stadium": game_data["venue"]["id"],
+            }
+
             for val in ["winner", "loser", "firstStar", "secondStar", "thirdStar"]:
                 try:
                     game_dict[val] = game_json["liveData"]["decisions"][val]["id"]
                 except Exception as e:
                     game_dict[val] = None
 
-            game_dict = {
-                "g_id_int": game_data["game"]["pk"],
-                "home_team": game_data["teams"]["home"]["id"],
-                "away_team": game_data["teams"]["away"]["id"],
-                "stadium": game_data["venue"]["id"],
-            }
             all_play_list = []
+            previous_play_goals = None
             for play_ind, play in enumerate(plays):
                 if play["result"]["eventTypeId"] not in ("PERIOD_READY", "PERIOD_START", "GAME_SCHEDULED", "PERIOD_OFFICIAL", "GAME_END", "GAME_OFFICIAL"):
                     play_info_dict = {}
@@ -191,10 +197,18 @@ class NhlApiScraper:
                         play_info_dict[coor_val] = play["coordinates"].pop(coor_val, None)
 
                     for p_val in range(4):
-                        play_info_dict["player" + str(p_val)] = play["players"][p_val]["player"]["id"]
-                        play_info_dict["player" + str(p_val) + "Type"] = play["players"][p_val]["playerType"]
+                        try:
+                            try:
+                                play_info_dict["player" + str(p_val)] = play["players"][p_val]["player"]["id"]
+                                play_info_dict["player" + str(p_val) + "Type"] = play["players"][p_val]["playerType"]
+                            except IndexError:
+                                play_info_dict["player" + str(p_val)] = None
+                                play_info_dict["player" + str(p_val) + "Type"] = None
+                        except KeyError:
+                            play_info_dict["player" + str(p_val)] = None
+                            play_info_dict["player" + str(p_val) + "Type"] = None
 
-                    if play_ind > 0:
+                    if previous_play_goals is not None:
                         for res_val in ["away", "home"]:
                             play_info_dict[res_val + "Goals"] = previous_play_goals[res_val]
                     else:
@@ -207,11 +221,13 @@ class NhlApiScraper:
                     play_info_dict["period"] = period
                     play_info_dict["periodTime"] = time
 
-                    play_info_dict["onIce"] = get_shift_dict(shift_list, period, time)
+                    on_ice = self.get_shift(shift_dict, period, time, homeId, awayId)
+
+                    play_info_dict.update(on_ice)
 
                     all_play_list.append(play_info_dict)
 
-                    previous_play_goals = play["goals"]
+                    previous_play_goals = play["about"]["goals"]
 
             game_dict.update({"plays": all_play_list})
         else:
@@ -219,8 +235,8 @@ class NhlApiScraper:
 
         return game_dict
 
-    def build_game_dataframes(self, game_json, shift_df):
-        game_dict = self.build_game_dictionary(game_json, shift_df)
+    def build_game_dataframes(self, game_json, shift_dict):
+        game_dict = self.build_game_dictionary(game_json, shift_dict)
 
         if game_dict is not None:
             play_list = game_dict.pop("plays")
@@ -243,21 +259,66 @@ class NhlApiScraper:
 
         raw_json = json.loads(raw)
 
-        return raw_json
+        return raw_json["data"]
 
-    def build_shift_df(self, shift_json):
+    def build_shift_dict(self, shift_json):
 
         shift_dict = {}
         for shift in shift_json:
-            for value in ["startTime", "endTime", "teamId", "playerId", "period"]:
+            temp_dict = {}
+            for value in ["startTime", "endTime", "teamId", "period"]:
                 temp_dict[value] = shift.pop(value, None)
-            temp_dict["intStartTime"] = (20*60)*(temp_dict["period"] - 1) + 60*int(temp_dict["startTime"].split(":")[0] + int(temp_dict["startTime"].split(":")[-1])
-            temp_dict["intEndTime"] = (20*60)*(temp_dict["period"] - 1) + 60*int(temp_dict["endTime"].split(":")[0] + int(temp_dict["endTime"].split(":")[-1])
-            shift_dict[shift["shiftNumber"]] = temp_dict
+            temp_dict["intStartTime"] = (20*60)*(temp_dict["period"] - 1) + 60*int(temp_dict["startTime"].split(":")[0]) + int(temp_dict["startTime"].split(":")[-1])
+            temp_dict["intEndTime"] = (20*60)*(temp_dict["period"] - 1) + 60*int(temp_dict["endTime"].split(":")[0]) + int(temp_dict["endTime"].split(":")[-1])
+            shift_dict[(shift["playerId"], shift["shiftNumber"])] = temp_dict
 
-        shift_df = pd.DataFrame(shift_dict)
+        minTime = 0
+        maxTime = max([d["intEndTime"] for d in shift_dict.values()])
 
-        return shift_df
+        team0 = min([d["teamId"] for d in shift_dict.values()])
+        team1 = max([d["teamId"] for d in shift_dict.values()])
+
+        time_list = range(minTime, maxTime + 1)
+
+        all_time_dict = {}
+        for t in time_list:
+            t0_list = []
+            t1_list = []
+            for p, s in shift_dict.items():
+                if t in range(s["intStartTime"], s["intEndTime"]):
+                    if s["teamId"] == team0:
+                        t0_list.append(p)
+                    else:
+                        t1_list.append(p)
+            all_time_dict[t] = {team0: t0_list, team1: t1_list}
+
+        return all_time_dict
+
+    def get_shift(self, shift_dict, period, time, hId, aId):
+
+        timeInt = 20*60*(period-1) + 60*int(time.split(":")[0]) + int(time.split(":")[-1])
+
+        onIce = shift_dict[timeInt]
+
+        home_list = onIce[hId]
+        away_list = onIce[aId]
+
+        on_ice_at_time_dict = {}
+        for i in range(6):
+            try:
+                on_ice_at_time_dict["on_ice_home_p" + str(i + 1)] = home_list[i][0]
+                on_ice_at_time_dict["on_ice_home_p" + str(i + 1) + "_shift"] = home_list[i][-1]
+            except IndexError:
+                on_ice_at_time_dict["on_ice_home_p" + str(i + 1)] = -1
+                on_ice_at_time_dict["on_ice_home_p" + str(i + 1) + "_shift"] = -1
+            try:
+                on_ice_at_time_dict["on_ice_away_p" + str(i + 1)] = away_list[i][0]
+                on_ice_at_time_dict["on_ice_away_p" + str(i + 1) + "_shift"] = away_list[i][-1]
+            except IndexError:
+                on_ice_at_time_dict["on_ice_away_p" + str(i + 1)] = -1
+                on_ice_at_time_dict["on_ice_away_p" + str(i + 1) + "_shift"] = -1
+
+        return on_ice_at_time_dict
 
     def get_player_data(self):
 
@@ -267,7 +328,7 @@ class NhlApiScraper:
             unique_player_query = "select distinct player_id from plays"
             player_df = pd.read_sql(unique_player_query, cnx)
             for plyr_id in player_df.tolist():
-                url = "https://statsapi.nhl.com/api/v1/people/" + plyr_id
+                url = "https://statsapi.web.nhl.com/api/v1/people/" + plyr_id
                 id_dict = self.get_raw_url_data(url)
             pass
 
@@ -275,7 +336,7 @@ class NhlApiScraper:
 
 def main():
 
-    nhls = NhlApiScraper(days=[1, 30], months=[10, 6], seasons=[2010, 2019], as_db=True, db_name="10_19_seasons")  # days=[10, 13], months=[8, 9], seasons=2019)
+    nhls = NhlApiScraper(days=[1, 30], months=[10, 6], seasons=[2018, 2019], as_db=True, db_name="10_19_seasons")  # days=[10, 13], months=[8, 9], seasons=2019)
 
     nhls.get_all_api_game_dfs()
 
